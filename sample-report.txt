@@ -1,0 +1,115 @@
+┌─ 系统信息
+├──────
+│ 主机名              : l**
+│ 操作系统            : Debian GNU/Linux 12 (bookworm)
+│ 内核版本            : 6.8.12-17-pve
+│ 运行时间            : up 1 week, 4 days, 16 hours, 0 minutes
+└──────────────────────────────────────────────────
+┌─ 处理器信息
+├───────
+│ 型号                : Intel(R) Xeon(R) CPU E3-1240 v3 @ 3.40GHz
+│ 核心数              : 4
+│ 线程数              : 8
+│ 频率                : 3600.453 MHz
+│ 缓存                : 8192 KB
+│ 使用率              : 25.4%
+│ CPU温度             : +54.0°C
+└──────────────────────────────────────────────────
+┌─ 内存信息
+├──────
+│ 总计                : 15.58 GB
+│ 已用                : 10.65 GB
+│ 可用                : 4.93 GB
+│ 内存插槽            : 2 条已安装
+│
+│ Memory Modules:
+├───────────────────────────────────────────────────────────────────┤
+│ 大小 │ 类型 │ 频率      │ 制造商   │ 序列号   │ 型号              │
+├───────────────────────────────────────────────────────────────────┤
+│ 8 GB │ DDR3 │ 1600 MT/s │ Kingston │ CA39**** │ 9965525-055.A00LF │
+│ 8 GB │ DDR3 │ 1600 MT/s │ Kingston │ AD36**** │ 9965525-138.A00LF │
+└───────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────
+┌─ 硬盘信息
+├──────
+│ /dev/sda1                        1.8T  1.3T  386G  77% /
+│ /dev/fuse                        128M   20K  128M   1% /etc/pve
+│ pool1/containers/ctr-01  549M   88M  462M  16% /var/lib/incus/storage-pools/pool1/containers/ctr-01
+│ pool1/containers/ctr-02    382G  196G  187G  52% /var/lib/incus/storage-pools/pool1/containers/ctr-02
+│ pool1/containers/ctr-03    49G  4.1G   45G   9% /var/lib/incus/storage-pools/pool1/containers/ctr-03
+│ pool1/containers/ctr-04   98G  2.8G   95G   3% /var/lib/incus/storage-pools/pool1/containers/ctr-04
+│ pool1/containers/ctr-05   201G  135G   66G  68% /var/lib/incus/storage-pools/pool1/containers/ctr-05
+│ pool1/containers/ctr-06   401G   48G  354G  12% /var/lib/incus/storage-pools/pool1/containers/ctr-06
+│
+│ Physical Disks Details:
+│
+│ ═══ /dev/sda ═══
+│   Basic Info:  1.7T Samsung SSD 883 DCT 1.92TB ATA
+│   序列号: S5HH***********
+│   SMART状态: PASSED
+│   通电时间: 28604 hours
+│   总读取量: 229.67 TB
+│   总写入量: 124.31 TB
+│   温度: 28°C
+│   重映射扇区: 0
+│   待处理扇区: 0
+│   报告的不可校正: 0
+└──────────────────────────────────────────────────
+┌─ RAID控制器信息
+├───────────
+│ 状态                : 未检测到软 RAID；存在硬件存储控制器
+│ 控制器              : Broadcom / LSI SAS2308 PCI-Express Fusion-MPT SAS-2
+│ 驱动                : mpt3sas
+│
+│ ═══ host0 (mpt2sas) ═══
+│   芯片: LSISAS2308
+│   板卡: SMC2308-IR
+│   固件版本: 15.00.00.00
+│   BIOS版本: 07.29.00.00
+│   SAS地址: 0x5003040000000000
+│   下挂设备: 0 个
+│   （该卡当前未接任何磁盘/扩展器）
+│   SAS通道: 8 个，全部未连接
+└──────────────────────────────────────────────────
+┌─ 网卡信息
+├──────
+│ ═══ eno1 ═══
+│   型号: Intel Corporation I210 Gigabit Network Connection (rev 03)
+│   状态: UP
+│   MAC地址: 00:25:90:XX:XX:XX
+│   速度: 1000 Mbps
+│   双工模式: full
+│   链接检测: Yes
+│   RX: 5.25 TB
+│   TX: 4.10 TB
+│
+│ ═══ eno2 ═══
+│   型号: Intel Corporation I210 Gigabit Network Connection (rev 03)
+│   状态: DOWN
+│   MAC地址: 00:25:90:XX:XX:XX
+│   速度: N/A
+│   双工模式: N/A
+│   链接检测: No
+│   RX: 0.00 B
+│   TX: 0.00 B
+└──────────────────────────────────────────────────
+┌─ 显卡信息
+├──────
+│
+│ Graphics Cards (PCI):
+│   04:00.0 VGA compatible controller: ASPEED Technology, Inc. ASPEED Graphics Family (rev 30)
+│
+│ Display Hardware Summary:
+│   ==========================================================
+│   /0/100/1c/0/0        /dev/fb0   display        ASPEED Graphics Family
+└──────────────────────────────────────────────────
+┌─ 主板信息
+├──────
+│ 厂商                : Supermicro
+│ 型号                : X10SL7-F
+│ Version             : 1.01
+│ BIOS Vendor         : American Megatrends Inc.
+│ BIOS Version        : 3.0a
+└──────────────────────────────────────────────────
+报告生成完成！
+Generated on: Sat Oct 10 08:48:24 AM CST 2026
