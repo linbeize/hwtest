@@ -3,23 +3,23 @@
 │ 主机名              : l**
 │ 操作系统            : Debian GNU/Linux 12 (bookworm)
 │ 内核版本            : 6.8.12-17-pve
-│ 运行时间            : up 1 week, 4 days, 16 hours, 0 minutes
+│ 运行时间            : up 1 week, 22 hours, 57 minutes
 └──────────────────────────────────────────────────
 ┌─ 处理器信息
 ├───────
 │ 型号                : Intel(R) Xeon(R) CPU E3-1240 v3 @ 3.40GHz
 │ 核心数              : 4
 │ 线程数              : 8
-│ 频率                : 3600.453 MHz
+│ 频率                : 3400.374 MHz
 │ 缓存                : 8192 KB
-│ 使用率              : 25.4%
-│ CPU温度             : +54.0°C
+│ 使用率              : 4.8%
+│ CPU温度             : +40.0°C
 └──────────────────────────────────────────────────
 ┌─ 内存信息
 ├──────
 │ 总计                : 15.58 GB
-│ 已用                : 10.65 GB
-│ 可用                : 4.93 GB
+│ 已用                : 11.62 GB
+│ 可用                : 3.96 GB
 │ 内存插槽            : 2 条已安装
 │
 │ Memory Modules:
@@ -32,14 +32,14 @@
 └──────────────────────────────────────────────────
 ┌─ 硬盘信息
 ├──────
-│ /dev/sda1                        1.8T  1.3T  386G  77% /
+│ /dev/sda1                        1.8T  1.5T  218G  87% /
 │ /dev/fuse                        128M   20K  128M   1% /etc/pve
-│ pool1/containers/ctr-01  549M   88M  462M  16% /var/lib/incus/storage-pools/pool1/containers/ctr-01
-│ pool1/containers/ctr-02    382G  196G  187G  52% /var/lib/incus/storage-pools/pool1/containers/ctr-02
-│ pool1/containers/ctr-03    49G  4.1G   45G   9% /var/lib/incus/storage-pools/pool1/containers/ctr-03
-│ pool1/containers/ctr-04   98G  2.8G   95G   3% /var/lib/incus/storage-pools/pool1/containers/ctr-04
-│ pool1/containers/ctr-05   201G  135G   66G  68% /var/lib/incus/storage-pools/pool1/containers/ctr-05
-│ pool1/containers/ctr-06   401G   48G  354G  12% /var/lib/incus/storage-pools/pool1/containers/ctr-06
+│ pool1/containers/ctr-01  550M   88M  462M  16% /var/lib/incus/storage-pools/pool1/containers/ctr-01
+│ pool1/containers/ctr-03    49G  3.2G   46G   7% /var/lib/incus/storage-pools/pool1/containers/ctr-03
+│ pool1/containers/ctr-06   401G   46G  355G  12% /var/lib/incus/storage-pools/pool1/containers/ctr-06
+│ pool1/containers/ctr-02    382G  197G  186G  52% /var/lib/incus/storage-pools/pool1/containers/ctr-02
+│ pool1/containers/ctr-05   201G   17G  184G   9% /var/lib/incus/storage-pools/pool1/containers/ctr-05
+│ pool1/containers/ctr-04   98G  156M   98G   1% /var/lib/incus/storage-pools/pool1/containers/ctr-04
 │
 │ Physical Disks Details:
 │
@@ -47,9 +47,9 @@
 │   Basic Info:  1.7T Samsung SSD 883 DCT 1.92TB ATA
 │   序列号: S5HH***********
 │   SMART状态: PASSED
-│   通电时间: 28604 hours
-│   总读取量: 229.67 TB
-│   总写入量: 124.31 TB
+│   通电时间: 29069 hours
+│   总读取量: 240.95 TB
+│   总写入量: 139.49 TB
 │   温度: 28°C
 │   重映射扇区: 0
 │   待处理扇区: 0
@@ -61,7 +61,7 @@
 │ 控制器              : Broadcom / LSI SAS2308 PCI-Express Fusion-MPT SAS-2
 │ 驱动                : mpt3sas
 │
-│ ═══ host0 (mpt2sas) ═══
+│ ═══ host6 (mpt2sas) ═══
 │   芯片: LSISAS2308
 │   板卡: SMC2308-IR
 │   固件版本: 15.00.00.00
@@ -80,8 +80,8 @@
 │   速度: 1000 Mbps
 │   双工模式: full
 │   链接检测: Yes
-│   RX: 5.25 TB
-│   TX: 4.10 TB
+│   RX: 305.82 GB
+│   TX: 257.27 GB
 │
 │ ═══ eno2 ═══
 │   型号: Intel Corporation I210 Gigabit Network Connection (rev 03)
@@ -112,4 +112,4 @@
 │ BIOS Version        : 3.0a
 └──────────────────────────────────────────────────
 报告生成完成！
-Generated on: Sat Oct 10 08:48:24 AM CST 2026
+Generated on: Thu Oct 29 05:32:40 PM CST 2026

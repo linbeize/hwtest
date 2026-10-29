@@ -272,8 +272,25 @@ smart_health() {
                   /SMART Health Status/{print $2; exit}'
 }
 
-smart_attr() {                           # $1=设备 $2=属性ID -> RAW_VALUE 首 token
-  smartctl -a "$1" 2>/dev/null | awk -v k="$2" '$1==k && NF>=10 {print $10; exit}'
+smart_fail_reason() {                    # $1=smartctl 输出 $2=退出码 -> 人类可读原因
+  local out=$1 rc=$2
+  if grep -qi "Permission denied" <<<"$out"; then
+    echo "权限不足，需要 root 运行"
+  elif grep -qi "No such device\|No such file" <<<"$out"; then
+    echo "设备不存在或已移除"
+  elif grep -qiE "please specify device type|try adding -d|device type.*required" <<<"$out"; then
+    echo "需要指定设备类型（如 -d sat / -d megaraid,N）"
+  elif grep -qi "Unknown USB bridge\|unsupported" <<<"$out"; then
+    echo "SMART 通过该桥接设备不可用"
+  elif ! command -v smartctl >/dev/null 2>&1; then
+    echo "未安装 smartmontools"
+  elif grep -qi "command not found" <<<"$out"; then
+    echo "未安装 smartmontools"
+  elif [ "$rc" -eq 127 ]; then
+    echo "未安装 smartmontools"
+  else
+    echo "无法读取（smartctl 退出码 $rc）"
+  fi
 }
 
 smart_snapshot() {
@@ -283,23 +300,58 @@ smart_snapshot() {
   local -a sargs=()
   [[ $dev == /dev/nvme* ]] && sargs=(-d nvme)
 
-  health=$(smart_health "$dev")
-  serial=$(smartctl -a "${sargs[@]}" "$dev" 2>/dev/null | sed -n 's/^Serial Number: *//p' | head -1)
-  fw=$(smartctl -a "${sargs[@]}" "$dev" 2>/dev/null | sed -n 's/^Firmware Version: *//p' | head -1)
+  # 只调用一次 smartctl 并保留 stderr 与退出码：失败时必须说明原因，
+  # 否则一排 N/A 会让人误以为磁盘本身不支持 SMART。
+  local raw rc
+  raw=$(smartctl -a "${sargs[@]}" "$dev" 2>&1)
+  rc=$?
 
-  poh=$(smart_attr "$dev" 9)
+  # 退出码非 0 且没有拿到任何设备标识，视为整体失败
+  if [ $rc -ne 0 ] && ! grep -qE "Serial Number:|Device Model:|Model Number:" <<<"$raw"; then
+    add "│   Basic Info:  ${basic:-$NA}"
+    add "│   SMART状态: ${NA}"
+    add "│   失败原因: $(smart_fail_reason "$raw" "$rc")"
+    return
+  fi
+
+  health=$(awk -F': ' '/self-assessment test result/{print $2; exit}
+                         /SMART Health Status/{print $2; exit}' <<<"$raw")
+  serial=$(sed -n 's/^Serial Number: *//p' <<<"$raw" | head -1)
+  fw=$(sed -n 's/^Firmware Version: *//p' <<<"$raw" | head -1)
+
+  # ATA 属性表：ID NAME FLAG VALUE WORST THRESH TYPE UPDATED WHEN_FAILED RAW_VALUE
+  local attrs
+  attrs=$(awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[A-Za-z]/ && NF >= 10 {print $1" "$10}' <<<"$raw")
+  attr_get() { awk -v k="$1" '$1==k {print $2; exit}' <<<"$attrs"; }
+
+  poh=$(attr_get 9)
   [ -n "$poh" ] && poh="${poh} hours"
 
-  rd=$(smart_attr "$dev" 242); [ -n "$rd" ] && rd=$(lba_human "$rd")
-  wr=$(smart_attr "$dev" 241); [ -n "$wr" ] && wr=$(lba_human "$wr")
+  rd=$(attr_get 242); [ -n "$rd" ] && rd=$(lba_human "$rd")
+  wr=$(attr_get 241); [ -n "$wr" ] && wr=$(lba_human "$wr")
 
-  temp=$(smart_attr "$dev" 194)
-  [ -z "$temp" ] && temp=$(smart_attr "$dev" 190)
+  temp=$(attr_get 194)
+  [ -z "$temp" ] && temp=$(attr_get 190)
   [ -n "$temp" ] && temp="${temp}°C"
 
-  realloc=$(smart_attr "$dev" 5)
-  pending=$(smart_attr "$dev" 197)
-  uncorr=$(smart_attr "$dev" 187)
+  realloc=$(attr_get 5)
+  pending=$(attr_get 197)
+  uncorr=$(attr_get 187)
+
+  # NVMe 字段口径与 ATA 不同，单独解析
+  if [ -z "$attrs" ] && grep -q "Data Units Read" <<<"$raw"; then
+    local du dwu
+    du=$(awk -F: '/Data Units Read/{gsub(/[ ,]/,"",$2); print $2; exit}' <<<"$raw")
+    dwu=$(awk -F: '/Data Units Written/{gsub(/[ ,]/,"",$2); print $2; exit}' <<<"$raw")
+    [ -n "$du" ] && rd=$(lba_human "$((du * 1000))")
+    [ -n "$dwu" ] && wr=$(lba_human "$((dwu * 1000))")
+    poh=$(awk -F: '/Power On Hours/{gsub(/[ ,]/,"",$2); print $2" hours"; exit}' <<<"$raw")
+    temp=$(awk -F: '/^Temperature:/{gsub(/^ +/,"",$2); print $2; exit}' <<<"$raw")
+    [ -n "$temp" ] && temp="${temp%°C}°C"
+    local em
+    em=$(awk -F: '/Media and Data Integrity Errors/{gsub(/[ ,]/,"",$2); print $2; exit}' <<<"$raw")
+    [ -n "$em" ] && { realloc=$em; pending=$em; uncorr=$em; }
+  fi
 
   add "│   Basic Info:  ${basic:-$NA}"
   add "│   序列号: $( [ "$MASK" = 1 ] && mask_serial "$serial" || echo "${serial:-$NA}")"

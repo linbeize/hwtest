@@ -42,17 +42,22 @@ def pad(s, w):
     return s + " " * max(0, w - dw(s))
 
 
-def sh(cmd, timeout=25):
-    """执行命令并合并 stderr，失败返回空串（不抛异常）。"""
+def sh_rc(cmd, timeout=25):
+    """执行命令并合并 stderr，返回 (输出, 退出码)。不抛异常。"""
     try:
         p = subprocess.run(
             cmd, shell=True, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, errors="replace", timeout=timeout,
         )
-        return p.stdout or ""
+        return (p.stdout or ""), p.returncode
     except Exception:
-        return ""
+        return "", 127
+
+
+def sh(cmd, timeout=25):
+    """执行命令并合并 stderr，失败返回空串（不抛异常）。"""
+    return sh_rc(cmd, timeout)[0]
 
 
 def row(label, value):
@@ -297,15 +302,38 @@ def physical_disks():
     return out
 
 
+def smart_fail_reason(raw, rc):
+    """把 smartctl 的失败输出翻译成可操作的原因。"""
+    low = (raw or "").lower()
+    if "permission denied" in low:
+        return "权限不足，需要 root 运行"
+    if "no such device" in low or "no such file" in low:
+        return "设备不存在或已移除"
+    if "please specify device type" in low or "try adding -d" in low:
+        return "需要指定设备类型（如 -d sat / -d megaraid,N）"
+    if "unknown usb bridge" in low or "unsupported" in low:
+        return "SMART 通过该桥接设备不可用"
+    if rc == 127 or "command not found" in low:
+        return "未安装 smartmontools"
+    return "无法读取（smartctl 退出码 %s）" % rc
+
+
 def smart_snapshot(dev, mask):
-    """返回 (basic, health, poh, read, write, temp, realloc, pending, uncorr, serial, fw)。"""
+    """返回 (basic, health, poh, read, write, temp, realloc, pending, uncorr, serial, fw)。
+
+    整体失败时返回 (basic, NA, 失败原因字符串, ...)，由调用方决定如何展示。
+    """
     basic = sh("lsblk -dno SIZE,MODEL,TRAN %s" % dev).strip()
     basic = re.sub(r"\s+", " ", basic).replace(" sata", " ATA").strip()
 
     args = "-d nvme " if dev.startswith("/dev/nvme") else ""
-    raw = sh("smartctl -a %s %s" % (args, dev), timeout=30)
-    if not raw:
-        return basic or NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA
+    raw, rc = sh_rc("smartctl -a %s %s" % (args, dev), timeout=30)
+
+    # 判定整体失败：命令不可用/退出码非 0，且没拿到任何设备标识
+    has_id = bool(re.search(r"Serial Number:|Device Model:|Model Number:", raw))
+    if rc != 0 and not has_id:
+        return (basic or NA, NA, smart_fail_reason(raw, rc),
+                NA, NA, NA, NA, NA, NA, NA, NA)
 
     serial = re.search(r"Serial Number:\s*(.+)", raw)
     fw = re.search(r"Firmware Version:\s*(.+)", raw)
@@ -401,6 +429,11 @@ def collect_disk(no_disk, mask):
             continue
         basic, health, poh, rd, wr, temp, realloc, pending, uncorr, serial, fw = smart_snapshot(dev, mask)
         body.append("│   Basic Info:  " + str(basic))
+        if health == NA and serial == NA and poh != NA:
+            # 整体读取失败：poh 位置携带的是失败原因
+            body.append("│   SMART状态: " + NA)
+            body.append("│   失败原因: " + str(poh))
+            continue
         body.append("│   序列号: " + str(serial))
         if show_fw:
             body.append("│   固件: " + str(fw))
