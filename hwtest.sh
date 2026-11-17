@@ -32,21 +32,23 @@ OUT=""
 
 # ───────────────────────────── 基础工具 ─────────────────────────────
 
+has() { command -v "$1" >/dev/null 2>&1; }
+
 # 纯 bash 重复字符，避免每次 fork seq
 rep() { local n=$1 s=$2 o=""; local i; for ((i = 0; i < n; i++)); do o+="$s"; done; printf '%s' "$o"; }
 
-# 终端显示宽度：非 ASCII 字符按 2 列计
+# 终端显示宽度：非 ASCII 字符按 2 列计（删掉 ASCII 后剩下的就是宽字符）
 dwidth() {
-  local s=$1 i c n=0
-  for ((i = 0; i < ${#s}; i++)); do
-    c=${s:i:1}
-    if [[ $c == [!$'\x20'-$'\x7e'] ]]; then n=$((n + 2)); else n=$((n + 1)); fi
-  done
-  printf '%s' "$n"
+  local s=$1 w
+  w=${s//[ -~]/}
+  printf '%s' $(( ${#s} + ${#w} ))
 }
 
-LINES=()
-add() { local l; for l in "$@"; do LINES+=("$l"); done; }
+# 去掉首尾空白
+trim() { local s=$1; s=${s#"${s%%[![:space:]]*}"}; s=${s%"${s##*[![:space:]]}"}; printf '%s' "$s"; }
+
+REPORT=()
+add() { local l; for l in "$@"; do REPORT+=("$l"); done; }
 
 row() {                                  # row 标签 值
   local lab=$1 val=$2 p
@@ -93,26 +95,43 @@ mask_serial() { local s=$1
 
 # ───────────────────────────── 系统信息 ─────────────────────────────
 
+os_name() {
+  local f
+  for f in /etc/os-release /usr/lib/os-release; do
+    [ -r "$f" ] && { sed -n 's/^PRETTY_NAME=//p' "$f" | tr -d '"'; return; }
+  done
+  uname -o 2>/dev/null || echo "$NA"
+}
+
+uptime_str() {                           # 与 uptime -p 同格式；精简系统（busybox/容器）无 -p 时自行计算
+  uptime -p 2>/dev/null && return
+  awk '{ s = int($1); d = int(s / 86400); h = int(s % 86400 / 3600); m = int(s % 3600 / 60)
+         o = ""
+         if (d) o = o d (d == 1 ? " day, " : " days, ")
+         if (h) o = o h (h == 1 ? " hour, " : " hours, ")
+         o = o m (m == 1 ? " minute" : " minutes")
+         print "up " o }' /proc/uptime 2>/dev/null || echo "$NA"
+}
+
 collect_system() {
+  local host=${HOSTNAME:-$(uname -n)}
+  [ "$MASK" = 1 ] && host=$(mask_serial "$host")
   block_open "系统信息"
-  if [ "$MASK" = 1 ]; then
-    row "主机名" "$(mask_serial "$(hostname)")"
-  else
-    row "主机名" "$(hostname)"
-  fi
-  row "操作系统" "$(sed -n 's/^PRETTY_NAME="\(.*\)"/\1/p' /etc/os-release)"
+  row "主机名" "$host"
+  row "操作系统" "$(os_name)"
   row "内核版本" "$(uname -r)"
-  row "运行时间" "$(uptime -p 2>/dev/null || uptime | sed 's/.*up //; s/,.*load.*//')"
+  row "运行时间" "$(uptime_str)"
   block_close
 }
 
 # ───────────────────────────── 处理器 ─────────────────────────────
 
-cpu_usage() {                            # 两次采样 /proc/stat 取平均
+cpu_usage() {                            # 两次采样 /proc/stat 取差值
   local a b
-  a=$(awk '/^cpu /{t=0; for(i=2;i<=NF;i++) t+=$i; print t, $5+$6}' /proc/stat)
+  a=$(awk '/^cpu /{t=0; for(i=2;i<=NF;i++) t+=$i; print t, $5+$6; exit}' /proc/stat 2>/dev/null)
   sleep 0.5
-  b=$(awk '/^cpu /{t=0; for(i=2;i<=NF;i++) t+=$i; print t, $5+$6}' /proc/stat)
+  b=$(awk '/^cpu /{t=0; for(i=2;i<=NF;i++) t+=$i; print t, $5+$6; exit}' /proc/stat 2>/dev/null)
+  [ -n "$a" ] && [ -n "$b" ] || { echo "$NA"; return; }
   awk -v a="$a" -v b="$b" 'BEGIN{
     split(a, A, " "); split(b, B, " ")
     dt = B[1] - A[1]; di = B[2] - A[2]
@@ -121,26 +140,27 @@ cpu_usage() {                            # 两次采样 /proc/stat 取平均
 }
 
 cpu_cache() {                            # 优先 L3，退化 L2，统一换算成 KB
-  local line v u
-  line=$(lscpu | awk -F'[: ]+' '/^L3 cache:/{print $3" "$4; exit}')
-  [ -z "$line" ] && line=$(lscpu | awk -F'[: ]+' '/^L2 cache:/{print $3" "$4; exit}')
-  [ -z "$line" ] && { echo "$NA"; return; }
-  v=${line%% *}; u=${line##* }
-  case "$u" in
-    KiB|KB)          : ;;
-    MiB|MB)          v=$((v * 1024)) ;;
-    GiB|GB)          v=$((v * 1048576)) ;;
-  esac
-  echo "${v} KB"
+  # 兼容 "8 MiB (1 instance)"、"8192K"、"1.5 MiB" 等多种 lscpu 写法
+  awk -F: '
+    /^L[23] cache:/ {
+      v = $2; gsub(/\(.*\)/, "", v); gsub(/ /, "", v)
+      n = v + 0; u = v; sub(/^[0-9.]+/, "", u)
+      if (u ~ /^M/) n *= 1024; else if (u ~ /^G/) n *= 1048576
+      c[substr($1, 2, 1)] = n
+    }
+    END {
+      n = ("3" in c) ? c["3"] : (("2" in c) ? c["2"] : 0)
+      if (n > 0) printf "%d KB\n", n; else print "N/A"
+    }' <<<"$LSCPU"
 }
 
 cpu_temp() {
-  local t m=0 v z
-  t=$(sensors 2>/dev/null | awk '/^Package id 0:/{print $4; exit}')
+  local t="" m=0 v z
+  has sensors && t=$(sensors 2>/dev/null | awk '/^(Package id 0|Tdie|Tctl):/ && match($0, /[+-][0-9.]+°C/) {print substr($0, RSTART, RLENGTH); exit}')
   if [ -z "$t" ]; then
     for z in /sys/class/thermal/thermal_zone*/temp; do
       [ -r "$z" ] || continue
-      v=$(cat "$z" 2>/dev/null) || continue
+      v=$(<"$z") 2>/dev/null || continue
       [ "$v" -gt "$m" ] 2>/dev/null && m=$v
     done
     [ "$m" -gt 0 ] && t=$(awk -v x="$m" 'BEGIN{printf "+%.1f°C", x/1000}')
@@ -148,20 +168,39 @@ cpu_temp() {
   echo "${t:-$NA}"
 }
 
-collect_cpu() {
-  local model cores sockets threads mhz
-  model=$(lscpu | awk -F: '/^Model name:/{sub(/^ +/, "", $2); print $2; exit}')
-  [ -z "$model" ] && model=$(awk -F: '/^model name/{sub(/^ +/, "", $2); print $2; exit}' /proc/cpuinfo)
+lscpu_get() { awk -F: -v k="$1" '$1 == k {sub(/^[ \t]+/, "", $2); print $2; exit}' <<<"$LSCPU"; }
 
-  cores=$(lscpu | awk -F: '/^Core\(s\) per socket:/{gsub(/ /,"",$2); print $2; exit}')
-  sockets=$(lscpu | awk -F: '/^Socket\(s\):/{gsub(/ /,"",$2); print $2; exit}')
-  threads=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
-  mhz=$(awk -F: '/^cpu MHz/{gsub(/^ +/,"",$2); printf "%.3f MHz", $2; exit}' /proc/cpuinfo)
+collect_cpu() {
+  local model cores threads mhz f
+  LSCPU=$(lscpu 2>/dev/null)             # 只调用一次，后续都从缓存解析
+
+  model=$(lscpu_get "Model name")
+  [ -z "$model" ] && model=$(awk -F: '/^model name/{sub(/^ +/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)
+
+  # 物理核心 = 去重后的 (core, socket) 组合；比 "Core(s) per socket" 更通用（ARM/混合架构）
+  cores=$(lscpu -p=core,socket 2>/dev/null | grep -v '^#' | sort -u | grep -c .)
+  if [ "${cores:-0}" -eq 0 ]; then
+    local cps sk
+    cps=$(lscpu_get "Core(s) per socket"); sk=$(lscpu_get "Socket(s)")
+    if [[ $cps =~ ^[0-9]+$ && $sk =~ ^[0-9]+$ ]]; then cores=$((cps * sk)); else cores=$NA; fi
+  fi
+  threads=$(nproc --all 2>/dev/null || grep -c ^processor /proc/cpuinfo)
+
+  mhz=$(awk -F: '/^cpu MHz/{gsub(/^ +/,"",$2); printf "%.3f MHz", $2; exit}' /proc/cpuinfo 2>/dev/null)
+  if [ -z "$mhz" ]; then                 # ARM 等平台 /proc/cpuinfo 无 MHz，退回 cpufreq / lscpu
+    f=/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
+    if [ -r "$f" ]; then
+      mhz=$(awk '{printf "%.3f MHz", $1 / 1000}' "$f")
+    else
+      f=$(lscpu_get "CPU max MHz")
+      [ -n "$f" ] && mhz=$(awk -v x="$f" 'BEGIN{printf "%.3f MHz", x}')
+    fi
+  fi
 
   block_open "处理器信息"
   row "型号" "${model:-$NA}"
-  row "核心数" "$((${cores:-1} * ${sockets:-1}))"
-  row "线程数" "$threads"
+  row "核心数" "$cores"
+  row "线程数" "${threads:-$NA}"
   row "频率" "${mhz:-$NA}"
   row "缓存" "$(cpu_cache)"
   row "使用率" "$(cpu_usage)"
@@ -227,9 +266,13 @@ mem_table() {                            # 读 stdin 的 | 分隔行，输出自
 
 collect_mem() {
   local tot avail used mods
-  tot=$(awk '/^MemTotal:/{printf "%.2f", $2/1048576}' /proc/meminfo)
-  avail=$(awk '/^MemAvailable:/{printf "%.2f", $2/1048576}' /proc/meminfo)
-  used=$(awk -v t="$tot" -v a="$avail" 'BEGIN{printf "%.2f", t-a}')
+  # 一次读完 meminfo；内核 < 3.14 没有 MemAvailable，退化为 MemFree + Buffers + Cached
+  read -r tot used avail < <(awk '
+    { m[$1] = $2 }
+    END {
+      a = ("MemAvailable:" in m) ? m["MemAvailable:"] : m["MemFree:"] + m["Buffers:"] + m["Cached:"]
+      printf "%.2f %.2f %.2f\n", m["MemTotal:"] / 1048576, (m["MemTotal:"] - a) / 1048576, a / 1048576
+    }' /proc/meminfo 2>/dev/null)
 
   block_open "内存信息"
   row "总计" "${tot} GB"
@@ -238,7 +281,7 @@ collect_mem() {
 
   if [ "$(id -u)" != "0" ]; then
     row "内存插槽" "无法读取（dmidecode 需要 root）"
-  elif ! command -v dmidecode >/dev/null 2>&1; then
+  elif ! has dmidecode; then
     row "内存插槽" "无法读取（未安装 dmidecode）"
   else
     mods=$(mem_modules)
@@ -263,13 +306,7 @@ collect_mem() {
 
 physical_disks() {
   lsblk -dn -o NAME,TYPE 2>/dev/null \
-    | awk '$2=="disk" && $1 !~ /^(loop|ram|zram|sr|md|dm-|nbd|rbd)/ {print "/dev/"$1}'
-}
-
-smart_health() {
-  smartctl -a "$1" 2>/dev/null \
-    | awk -F': ' '/self-assessment test result/{print $2; exit}
-                  /SMART Health Status/{print $2; exit}'
+    | awk '$2=="disk" && $1 !~ /^(loop|ram|zram|sr|md|dm-|nbd|rbd|zd)/ {print "/dev/"$1}'
 }
 
 smart_fail_reason() {                    # $1=smartctl 输出 $2=退出码 -> 人类可读原因
@@ -282,32 +319,31 @@ smart_fail_reason() {                    # $1=smartctl 输出 $2=退出码 -> �
     echo "需要指定设备类型（如 -d sat / -d megaraid,N）"
   elif grep -qi "Unknown USB bridge\|unsupported" <<<"$out"; then
     echo "SMART 通过该桥接设备不可用"
-  elif ! command -v smartctl >/dev/null 2>&1; then
-    echo "未安装 smartmontools"
-  elif grep -qi "command not found" <<<"$out"; then
-    echo "未安装 smartmontools"
-  elif [ "$rc" -eq 127 ]; then
-    echo "未安装 smartmontools"
   else
     echo "无法读取（smartctl 退出码 $rc）"
   fi
 }
 
+# "Key:   1,234,567 [632 GB]" -> 1234567（取冒号后第一个数字，去千分位）
+smart_num() { awk -F: -v k="$1" 'index($0, k) == 1 { v = $2; gsub(/,/, "", v); if (match(v, /[0-9]+/)) print substr(v, RSTART, RLENGTH); exit }' <<<"$2"; }
+
 smart_snapshot() {
   local dev=$1 basic health poh rd wr temp realloc pending uncorr serial fw
-  basic=$(lsblk -dno SIZE,MODEL,TRAN "$dev" 2>/dev/null | tr -s ' ' | sed 's/ sata$/ ATA/' | sed 's/^ //')
-
-  local -a sargs=()
-  [[ $dev == /dev/nvme* ]] && sargs=(-d nvme)
+  basic=$(lsblk -dno SIZE,MODEL,TRAN "$dev" 2>/dev/null | tr -s ' ' | sed 's/ sata$/ ATA/; s/^ //')
 
   # 只调用一次 smartctl 并保留 stderr 与退出码：失败时必须说明原因，
   # 否则一排 N/A 会让人误以为磁盘本身不支持 SMART。
+  # 注意：不用空数组展开 "${arr[@]}"，bash < 4.4 在 set -u 下会报 unbound variable
   local raw rc
-  raw=$(smartctl -a "${sargs[@]}" "$dev" 2>&1)
+  if [[ $dev == /dev/nvme* ]]; then
+    raw=$(smartctl -a -d nvme "$dev" 2>&1)
+  else
+    raw=$(smartctl -a "$dev" 2>&1)
+  fi
   rc=$?
 
   # 退出码非 0 且没有拿到任何设备标识，视为整体失败
-  if [ $rc -ne 0 ] && ! grep -qE "Serial Number:|Device Model:|Model Number:" <<<"$raw"; then
+  if [ $rc -ne 0 ] && ! grep -qiE "^(Serial Number|Device Model|Model Number|Product):" <<<"$raw"; then
     add "│   Basic Info:  ${basic:-$NA}"
     add "│   SMART状态: ${NA}"
     add "│   失败原因: $(smart_fail_reason "$raw" "$rc")"
@@ -316,46 +352,49 @@ smart_snapshot() {
 
   health=$(awk -F': ' '/self-assessment test result/{print $2; exit}
                          /SMART Health Status/{print $2; exit}' <<<"$raw")
-  serial=$(sed -n 's/^Serial Number: *//p' <<<"$raw" | head -1)
+  serial=$(sed -n 's/^Serial [Nn]umber: *//p' <<<"$raw" | head -1)
   fw=$(sed -n 's/^Firmware Version: *//p' <<<"$raw" | head -1)
 
-  # ATA 属性表：ID NAME FLAG VALUE WORST THRESH TYPE UPDATED WHEN_FAILED RAW_VALUE
-  local attrs
-  attrs=$(awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[A-Za-z]/ && NF >= 10 {print $1" "$10}' <<<"$raw")
-  attr_get() { awk -v k="$1" '$1==k {print $2; exit}' <<<"$attrs"; }
+  if grep -q "^Data Units Read" <<<"$raw"; then
+    # NVMe：1 data unit = 1000 个 512B 扇区
+    local du dwu
+    du=$(smart_num "Data Units Read" "$raw")
+    dwu=$(smart_num "Data Units Written" "$raw")
+    [ -n "$du" ]  && rd=$(lba_human "${du}000")
+    [ -n "$dwu" ] && wr=$(lba_human "${dwu}000")
+    poh=$(smart_num "Power On Hours" "$raw")
+    temp=$(smart_num "Temperature:" "$raw")
+    # NVMe 没有扇区重映射概念，只有介质错误计数
+    uncorr=$(smart_num "Media and Data Integrity Errors" "$raw")
+  else
+    # ATA 属性表：ID NAME FLAG VALUE WORST THRESH TYPE UPDATED WHEN_FAILED RAW_VALUE
+    # RAW_VALUE 可能是 "35 (Min/Max 20/45)" 或 "12345h+00m"，只取开头数字
+    local attrs
+    attrs=$(awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[A-Za-z]/ && NF >= 10 {v = $10; sub(/[^0-9].*/, "", v); print $1, v}' <<<"$raw")
+    attr_get() { awk -v k="$1" '$1 == k && $2 != "" {print $2; exit}' <<<"$attrs"; }
 
-  poh=$(attr_get 9)
-  [ -n "$poh" ] && poh="${poh} hours"
+    poh=$(attr_get 9)
+    rd=$(attr_get 242); [ -n "$rd" ] && rd=$(lba_human "$rd")
+    wr=$(attr_get 241); [ -n "$wr" ] && wr=$(lba_human "$wr")
+    temp=$(attr_get 194); [ -z "$temp" ] && temp=$(attr_get 190)
+    realloc=$(attr_get 5)
+    pending=$(attr_get 197)
+    uncorr=$(attr_get 187)
 
-  rd=$(attr_get 242); [ -n "$rd" ] && rd=$(lba_human "$rd")
-  wr=$(attr_get 241); [ -n "$wr" ] && wr=$(lba_human "$wr")
-
-  temp=$(attr_get 194)
-  [ -z "$temp" ] && temp=$(attr_get 190)
+    # SAS 盘没有 ATA 属性表，用 SCSI 日志页字段兜底
+    [ -z "$temp" ] && temp=$(smart_num "Current Drive Temperature" "$raw")
+    [ -z "$poh" ] && poh=$(awk -F'= *' '/number of hours powered up/ {printf "%d", $2; exit}' <<<"$raw")
+  fi
+  [ -n "$poh" ]  && poh="${poh} hours"
   [ -n "$temp" ] && temp="${temp}°C"
 
-  realloc=$(attr_get 5)
-  pending=$(attr_get 197)
-  uncorr=$(attr_get 187)
-
-  # NVMe 字段口径与 ATA 不同，单独解析
-  if [ -z "$attrs" ] && grep -q "Data Units Read" <<<"$raw"; then
-    local du dwu
-    du=$(awk -F: '/Data Units Read/{gsub(/[ ,]/,"",$2); print $2; exit}' <<<"$raw")
-    dwu=$(awk -F: '/Data Units Written/{gsub(/[ ,]/,"",$2); print $2; exit}' <<<"$raw")
-    [ -n "$du" ] && rd=$(lba_human "$((du * 1000))")
-    [ -n "$dwu" ] && wr=$(lba_human "$((dwu * 1000))")
-    poh=$(awk -F: '/Power On Hours/{gsub(/[ ,]/,"",$2); print $2" hours"; exit}' <<<"$raw")
-    temp=$(awk -F: '/^Temperature:/{gsub(/^ +/,"",$2); print $2; exit}' <<<"$raw")
-    [ -n "$temp" ] && temp="${temp%°C}°C"
-    local em
-    em=$(awk -F: '/Media and Data Integrity Errors/{gsub(/[ ,]/,"",$2); print $2; exit}' <<<"$raw")
-    [ -n "$em" ] && { realloc=$em; pending=$em; uncorr=$em; }
-  fi
-
   add "│   Basic Info:  ${basic:-$NA}"
-  add "│   序列号: $( [ "$MASK" = 1 ] && mask_serial "$serial" || echo "${serial:-$NA}")"
-  [ "$MASK" = 1 ] || add "│   固件: ${fw:-$NA}"
+  if [ "$MASK" = 1 ]; then
+    add "│   序列号: $(mask_serial "$serial")"
+  else
+    add "│   序列号: ${serial:-$NA}"
+    add "│   固件: ${fw:-$NA}"
+  fi
   add "│   SMART状态: ${health:-$NA}"
   add "│   通电时间: ${poh:-$NA}"
   add "│   总读取量: ${rd:-$NA}"
@@ -368,8 +407,14 @@ smart_snapshot() {
 
 collect_disk() {
   block_open "硬盘信息"
-  while IFS= read -r l; do add "│ ${l}"; done \
-    < <(df -h -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs 2>/dev/null | tail -n +2)
+  # -P 防止长设备名折行；再用 awk 统一列宽，避免 ZFS 数据集等长名字把表格挤歪
+  local l
+  while IFS= read -r l; do add "│ ${l}"; done < <(
+    df -hP -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs 2>/dev/null | awk '
+      { n++; for (i = 1; i <= 6; i++) { c[n, i] = $i; if (length($i) > w[i]) w[i] = length($i) }
+        for (i = 7; i <= NF; i++) c[n, 6] = c[n, 6] " " $i }      # 挂载点含空格
+      END { for (j = 1; j <= n; j++)
+              printf "%-*s %*s %*s %*s %*s %s\n", w[1], c[j,1], w[2], c[j,2], w[3], c[j,3], w[4], c[j,4], w[5], c[j,5], c[j,6] }')
 
   add "│"
   add "│ Physical Disks Details:"
@@ -388,9 +433,12 @@ collect_disk() {
     if [ "$NO_DISK" = 1 ]; then
       add "│   Basic Info:  $(lsblk -dno SIZE,MODEL "$dev" 2>/dev/null | tr -s ' ' | sed 's/^ //')"
       add "│   (--no-disk：已跳过 SMART 采集)"
-      continue
+    elif ! has smartctl; then
+      add "│   Basic Info:  $(lsblk -dno SIZE,MODEL "$dev" 2>/dev/null | tr -s ' ' | sed 's/^ //')"
+      add "│   SMART状态: ${NA}（未安装 smartmontools）"
+    else
+      smart_snapshot "$dev"
     fi
-    smart_snapshot "$dev"
   done <<<"$disks"
   block_close
 }
@@ -399,68 +447,66 @@ collect_disk() {
 
 collect_raid() {
   block_open "RAID控制器信息"
-  if grep -qE '^md[0-9]+ *:' /proc/mdstat 2>/dev/null; then
-    while IFS= read -r l; do row "状态" "$l"; done \
+  local l found=0
+
+  # 软 RAID（mdadm）
+  if [ -r /proc/mdstat ]; then
+    while IFS= read -r l; do found=1; row "软RAID" "$l"; done \
       < <(awk '/^md[0-9]+ *:/{sub(/ *$/, ""); print}' /proc/mdstat)
-    block_close
-    return
   fi
 
-  # 无软 RAID：探测硬件存储控制器（lspci 缩进行从属于上一行）
-  local parsed ctlname drv
-  parsed=$(lspci -nnk 2>/dev/null | awk '
-    /\[0104\]|\[0107\]/ && !found {
-      found = 1; name = $0
-      sub(/.*: /, "", name)
+  # 硬件存储控制器（lspci 类别 0104=RAID, 0107=SAS；缩进行从属于上一行）
+  local name drv
+  while IFS='|' read -r name drv; do
+    [ -z "$name" ] && continue
+    found=1
+    row "控制器" "$name"
+    row "驱动" "${drv:-$NA}"
+  done < <(lspci -nnk 2>/dev/null | awk '
+    function flush() { if (name != "") print name "|" d; name = d = "" }
+    !/^\t/ { flush() }
+    /\[0104\]|\[0107\]/ && !/^\t/ {
+      name = $0; sub(/^[^ ]+ [^:]*: /, "", name)
       sub(/ \[[0-9a-f]{4}:[0-9a-f]{4}\].*/, "", name)
       next
     }
-    found && /^\t/ { if (/Kernel driver in use:/) { d = $0; sub(/.*: /, "", d) } next }
-    found && !/^\t/ { exit }
-    END { if (found) print name "|" d; else print "NONE" }
+    name != "" && /Kernel driver in use:/ { d = $0; sub(/.*: /, "", d) }
+    END { flush() }
   ')
 
-  if [ "$parsed" = "NONE" ] || [ -z "$parsed" ]; then
-    row "状态" "未检测到"
-    block_close
-    return
-  fi
-  ctlname=${parsed%%|*}
-  drv=${parsed##*|}
-
-  row "状态" "未检测到软 RAID；存在硬件存储控制器"
-  row "控制器" "$ctlname"
-  row "驱动" "${drv:-$NA}"
-
-  # 已配置的逻辑卷/阵列（软 RAID、LVM、DM）
-  local vols=""
-  vols=$(awk '/^md[0-9]+ *:/{print $1}' /proc/mdstat 2>/dev/null | tr '\n' ' ')
-  local dm
+  # 已配置的 device-mapper 卷（LVM / dm-crypt 等），优先显示友好名
+  local dm vols=""
   for dm in /sys/class/block/dm-*; do
     [ -e "$dm" ] || continue
-    vols="${vols}$(basename "$dm") "
+    l=$(cat "$dm/dm/name" 2>/dev/null)
+    vols+="${l:-$(basename "$dm")} "
   done
-  [ -n "$(echo "$vols" | tr -d ' ')" ] && row "逻辑卷" "$(echo "$vols" | sed 's/ *$//')"
+  [ -n "$vols" ] && row "逻辑卷" "${vols% }"
+
+  [ "$found" = 1 ] || row "状态" "未检测到"
 
   # 逐个 SAS/RAID HBA 读 sysfs 明细：型号、固件、BIOS、SAS 地址、下挂设备
   local h name fw bios prod sasaddr board ndev
   for h in /sys/class/scsi_host/host*/; do
-    name=$(cat "$h/proc_name" 2>/dev/null) || continue
+    name=$(cat "${h}proc_name" 2>/dev/null) || continue
     case "$name" in
       mpt2sas|mpt3sas|megaraid_sas|aacraid|hpsa|smartpqi|mvsas|isci) ;;
       *) continue ;;
     esac
 
-    fw=$(cat "$h/version_fw" 2>/dev/null)
-    bios=$(cat "$h/version_bios" 2>/dev/null)
-    prod=$(cat "$h/version_product" 2>/dev/null)
-    sasaddr=$(cat "$h/host_sas_address" 2>/dev/null)
-    board=$(cat "$h/board_name" 2>/dev/null)
+    fw=$(cat "${h}version_fw" 2>/dev/null)
+    bios=$(cat "${h}version_bios" 2>/dev/null)
+    prod=$(cat "${h}version_product" 2>/dev/null)
+    sasaddr=$(cat "${h}host_sas_address" 2>/dev/null)
+    board=$(cat "${h}board_name" 2>/dev/null)
     # 以实际块设备计数：SATA/SAS 端口空位也会建 target 目录，按目录数会虚报
-    local devs
-    devs=$(ls -d "$h"/device/target*/*/block/* 2>/dev/null | xargs -r -n1 basename 2>/dev/null | tr '\n' ' ')
-    devs=$(echo "$devs" | sed 's/ *$//')
-    ndev=$( [ -n "$devs" ] && echo "$devs" | wc -w || echo 0)
+    local devs="" b
+    ndev=0
+    for b in "$h"device/target*/*/block/*; do
+      [ -e "$b" ] || continue
+      devs+="${b##*/} "; ndev=$((ndev + 1))
+    done
+    devs=${devs% }
 
     add "│"
     add "│ ═══ $(basename "$h") ($name) ═══"
@@ -506,7 +552,7 @@ collect_raid() {
 
 collect_net() {
   block_open "网卡信息"
-  local found=0 i first=1 dev nic base bdf short model state mac eth speed duplex link rx tx
+  local found=0 first=1 dev nic base bdf model state mac eth speed duplex link rx tx
 
   for dev in /sys/class/net/*/device; do
     [ -e "$dev" ] || continue
@@ -516,9 +562,11 @@ collect_net() {
     first=0
 
     base=/sys/class/net/$nic
-    bdf=$(basename "$(readlink -f "$base/device")")
-    short=$(cut -d: -f2- <<<"$bdf")
-    model=$(lspci -s "$short" 2>/dev/null | cut -d: -f3- | sed 's/^ //')
+    # virtio 等网卡的 device 指向 virtioN，其父目录才是 PCI 设备；保留 PCI domain
+    bdf=$(readlink -f "$base/device")
+    [[ ${bdf##*/} =~ ^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$ ]] || bdf=${bdf%/*}
+    bdf=${bdf##*/}
+    model=$(lspci -s "$bdf" 2>/dev/null | sed 's/^[^ ]* [^:]*: //')
     [ -z "$model" ] && model="$NA"
 
     state=$(tr 'a-z' 'A-Z' <"$base/operstate" 2>/dev/null)
@@ -587,7 +635,7 @@ collect_gpu() {
 
 # ───────────────────────────── 主板 ─────────────────────────────
 
-dmi() { local f=/sys/devices/virtual/dmi/id/$1 v; v=$(cat "$f" 2>/dev/null); v=${v%"${v##*[![:space:]]}"}; echo "${v:-$NA}"; }
+dmi() { local v; v=$(trim "$(cat "/sys/devices/virtual/dmi/id/$1" 2>/dev/null)"); echo "${v:-$NA}"; }
 
 collect_board() {
   block_open "主板信息"
@@ -601,8 +649,27 @@ collect_board() {
 
 # ───────────────────────────── 主流程 ─────────────────────────────
 
+# 不读 "$0" 解析注释：curl | bash 管道执行时 $0 是 "bash"，那样会拿不到帮助
 usage() {
-  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+hwtest.sh —— Linux 硬件信息采集报告
+
+用法:
+  ./hwtest.sh                        # 默认保存 hwtest_report_<时间戳>.txt 并打印
+  ./hwtest.sh -o hw.txt              # 保存 hw_<时间戳>.txt
+  ./hwtest.sh -o out/                # 保存到 out/hwtest_report_<时间戳>.txt
+  ./hwtest.sh -o hw.txt --no-stamp   # 精确写入 hw.txt（不加时间戳）
+  ./hwtest.sh --stdout               # 只打印到屏幕，不写文件
+  ./hwtest.sh --mask                 # 脱敏主机名/MAC/磁盘与内存序列号
+  ./hwtest.sh --no-disk              # 跳过 SMART 采集（快速模式）
+
+一键运行:
+  curl -fsSL https://raw.githubusercontent.com/linbeize/hwtest/main/hwtest.sh | sudo bash
+  curl -fsSL https://raw.githubusercontent.com/linbeize/hwtest/main/hwtest.sh | sudo bash -s -- --mask
+
+依赖命令: lscpu dmidecode lshw smartctl sensors df lsblk ethtool lspci
+内存条明细与 SMART 需要 root；非 root 自动降级为提示文字，不中断。
+EOF
 }
 
 main() {
@@ -663,16 +730,16 @@ main() {
 
   if [ -n "$OUT" ]; then
     # 先落盘再判断结果：tee 失败时不能谎报"已写入"
-    if printf '%s\n' "${LINES[@]}" > "$OUT"; then
-      printf '%s\n' "${LINES[@]}"
+    if printf '%s\n' "${REPORT[@]}" > "$OUT"; then
+      printf '%s\n' "${REPORT[@]}"
       echo "[已写入 $OUT]" >&2
     else
-      printf '%s\n' "${LINES[@]}"                       # 落盘失败仍把报告交给屏幕
+      printf '%s\n' "${REPORT[@]}"                       # 落盘失败仍把报告交给屏幕
       echo "错误: 无法写入 $OUT（目录不存在或不可写）" >&2
       exit 1
     fi
   else
-    printf '%s\n' "${LINES[@]}"      # --stdout：仅打印，不落盘
+    printf '%s\n' "${REPORT[@]}"      # --stdout：仅打印，不落盘
   fi
 }
 
