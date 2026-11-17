@@ -28,6 +28,7 @@ LABEL_W=20               # 标签列显示宽度
 NA="N/A"
 MASK=0
 NO_DISK=0
+NO_INSTALL=0
 OUT=""
 
 # ───────────────────────────── 基础工具 ─────────────────────────────
@@ -649,6 +650,84 @@ collect_board() {
 
 # ───────────────────────────── 主流程 ─────────────────────────────
 
+# ───────────────────────────── 依赖安装 ─────────────────────────────
+
+# 命令 -> 包名（各发行版包名不同）；$1=包管理器 $2=命令
+dep_pkg() {
+  case "$2" in
+    lscpu|lsblk) [ "$1" = apk ] && echo "util-linux-misc lsblk" || echo util-linux ;;
+    lspci)       echo pciutils ;;
+    smartctl)    echo smartmontools ;;
+    sensors)
+      case "$1" in
+        apt|apk)       echo lm-sensors ;;
+        zypper)        echo sensors ;;
+        *)             echo lm_sensors ;;
+      esac ;;
+    *)           echo "$2" ;;          # dmidecode lshw ethtool 各发行版同名
+  esac
+}
+
+# 缺失的依赖自动安装；失败只警告不中断（报告里对应项降级为 N/A）
+ensure_deps() {
+  local cmds=(lscpu lsblk lspci dmidecode lshw smartctl sensors ethtool)
+  local missing=() c pm pkgs=() p
+  for c in "${cmds[@]}"; do has "$c" || missing+=("$c"); done
+  [ ${#missing[@]} -eq 0 ] && return 0
+
+  if [ "$(id -u)" != 0 ]; then
+    echo "[提示] 缺少命令: ${missing[*]}；用 root 运行可自动安装" >&2
+    return 0
+  fi
+
+  for pm in apt-get dnf yum zypper pacman apk; do has "$pm" && break; pm=""; done
+  if [ -z "$pm" ]; then
+    echo "[提示] 缺少命令: ${missing[*]}；未识别包管理器，请手动安装" >&2
+    return 0
+  fi
+  [ "$pm" = apt-get ] && pm=apt
+
+  for c in "${missing[@]}"; do
+    for p in $(dep_pkg "$pm" "$c"); do
+      [[ " ${pkgs[*]-} " == *" $p "* ]] || pkgs+=("$p")
+    done
+  done
+  echo "[安装依赖] ${pkgs[*]} （${pm}）..." >&2
+
+  # 安装命令一律 </dev/null：curl | bash 时脚本本身就在 stdin 上，
+  # 包管理器若读 stdin 会把剩余脚本吃掉
+  pm_install() {
+    case "$pm" in
+      apt)    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@" ;;
+      dnf)    dnf install -y -q "$@" ;;
+      yum)    yum install -y -q "$@" ;;
+      zypper) zypper -n -q install "$@" ;;
+      pacman) pacman -S --noconfirm --needed "$@" ;;
+      apk)    apk add -q "$@" ;;
+    esac </dev/null >/dev/null 2>&1
+  }
+
+  # apt 软件源索引可能从未更新过（新装系统 / 容器）
+  [ "$pm" = apt ] && apt-get update -qq </dev/null >/dev/null 2>&1
+  [ "$pm" = apk ] && apk update -q </dev/null >/dev/null 2>&1
+
+  # 先整体装；失败（某个包在该发行版源里不存在）再逐个装，避免一个包拖垮全部
+  if ! pm_install "${pkgs[@]}"; then
+    for p in "${pkgs[@]}"; do
+      pm_install "$p" || echo "[安装依赖] $p 安装失败，相关项将显示 N/A" >&2
+    done
+  fi
+  hash -r
+
+  missing=()
+  for c in "${cmds[@]}"; do has "$c" || missing+=("$c"); done
+  if [ ${#missing[@]} -eq 0 ]; then
+    echo "[安装依赖] 完成" >&2
+  else
+    echo "[安装依赖] 仍缺少: ${missing[*]}" >&2
+  fi
+}
+
 # 不读 "$0" 解析注释：curl | bash 管道执行时 $0 是 "bash"，那样会拿不到帮助
 usage() {
   cat <<'EOF'
@@ -662,12 +741,14 @@ hwtest.sh —— Linux 硬件信息采集报告
   ./hwtest.sh --stdout               # 只打印到屏幕，不写文件
   ./hwtest.sh --mask                 # 脱敏主机名/MAC/磁盘与内存序列号
   ./hwtest.sh --no-disk              # 跳过 SMART 采集（快速模式）
+  ./hwtest.sh --no-install           # 不自动安装缺失的依赖
 
 一键运行:
   curl -fsSL https://raw.githubusercontent.com/linbeize/hwtest/main/hwtest.sh | sudo bash
   curl -fsSL https://raw.githubusercontent.com/linbeize/hwtest/main/hwtest.sh | sudo bash -s -- --mask
 
 依赖命令: lscpu dmidecode lshw smartctl sensors df lsblk ethtool lspci
+以 root 运行时会自动安装缺失的依赖（apt/dnf/yum/zypper/pacman/apk），--no-install 可关闭。
 内存条明细与 SMART 需要 root；非 root 自动降级为提示文字，不中断。
 EOF
 }
@@ -686,6 +767,7 @@ main() {
       --no-stamp)  STAMP=0; shift ;;
       --mask)      MASK=1; shift ;;
       --no-disk)   NO_DISK=1; shift ;;
+      --no-install) NO_INSTALL=1; shift ;;
       -h|--help)   usage; exit 0 ;;
       *)           echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -715,6 +797,8 @@ main() {
       OUT="${dir}/${base}_$(date '+%Y%m%d-%H%M%S')${ext}"
     fi
   fi
+
+  [ "$NO_INSTALL" = 1 ] || ensure_deps
 
   collect_system
   collect_cpu
