@@ -2,7 +2,28 @@
 
 Linux 硬件信息采集报告脚本，输出带框线的中文硬件快照。
 
-同一功能提供两个版本：纯 shell（`hwtest.sh`，无 Python 依赖）与 Python（`hwtest.py`），两者输出逐行一致。
+纯 Bash 实现，单文件、无 Python 依赖，可直接 `curl | bash` 运行。
+
+## 一键运行
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/linbeize/hwtest/main/hwtest.sh | sudo bash
+```
+
+没有 curl 时用 wget：
+
+```bash
+wget -qO- https://raw.githubusercontent.com/linbeize/hwtest/main/hwtest.sh | sudo bash
+```
+
+带参数运行（`bash -s --` 之后的内容会传给脚本）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/linbeize/hwtest/main/hwtest.sh | sudo bash -s -- --mask --stdout
+```
+
+> 用 `sudo` 是因为内存条明细（dmidecode）和 SMART 需要 root；不加也能跑，只是这两项会提示无法读取。
+> 报告默认保存在当前目录的 `hwtest_report_<时间戳>.txt`。
 
 ## 输出内容
 
@@ -22,18 +43,6 @@ Linux 硬件信息采集报告脚本，输出带框线的中文硬件快照。
 ./hwtest.sh --no-disk              # 跳过 SMART 采集（快速模式）
 ```
 
-Python 版参数相同：
-
-```bash
-python3 hwtest.py --mask --no-disk
-```
-
-也可以直接管道执行：
-
-```bash
-curl -fsSL <raw-url>/hwtest.sh | bash
-```
-
 ## 依赖
 
 优先使用外部命令，缺失时自动降级为 `N/A` 并继续输出，不会中断。
@@ -42,7 +51,7 @@ curl -fsSL <raw-url>/hwtest.sh | bash
 lscpu  dmidecode  lshw  smartctl  sensors  df  lsblk  ethtool  lspci
 ```
 
-内存条明细需要 root（读 `dmidecode`）；非 root 会显示「无法读取」而非崩溃。
+内存条明细与 SMART 需要 root；非 root 会显示「无法读取」及原因，而非崩溃。
 
 Debian/Ubuntu 安装依赖：
 
